@@ -6,47 +6,78 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 )
 
 type Block struct {
-	Hash     []byte
-	Data     []byte
-	PrevHash []byte
+	Index     int
+	Timestamp string
+	Hash      string
+	Data      string
+	PrevHash  string
+	Nonce     int
 }
 
 type BlockChain struct {
 	blocks []*Block
 }
 
-func (b *Block) DeriveHash() {
-	info := bytes.Join([][]byte{b.Data, b.PrevHash}, []byte{})
-	hash := sha256.Sum256(info)
-	b.Hash = hash[:]
-}
-func CreateBlock(data string, prevHash []byte) *Block {
-	block := &Block{[]byte{}, []byte(data), prevHash}
-
-	block.DeriveHash()
-	return block
-}
-
-func (chain *BlockChain) AddBlock(data string) {
-	prevBlock := chain.blocks[len(chain.blocks)-1]
-	new := CreateBlock(data, prevBlock.Hash)
-	chain.blocks = append(chain.blocks, new)
-}
-
+var PendingBlocks = make(chan string)
 var chain *BlockChain
+
+func (b *Block) Mine() {
+	target := "0"
+	for {
+
+		info := bytes.Join([][]byte{[]byte(b.Data), []byte(b.PrevHash), []byte(fmt.Sprintf("%d", b.Nonce))}, []byte{})
+		hash := sha256.Sum256(info)
+
+		b.Hash = fmt.Sprintf("%x", hash)
+
+		if b.Hash[:1] == target {
+			fmt.Printf("A new Block is Mined! %s\n", b.Hash)
+			break
+		}
+		b.Nonce++
+		time.Sleep(1 * time.Millisecond)
+	}
+}
+func BlockMiner(chain *BlockChain) {
+	for data := range PendingBlocks {
+		fmt.Println("New data received! starting to mine")
+		prevBlock := chain.blocks[len(chain.blocks)-1]
+		newBlock := &Block{
+			Index:     prevBlock.Index + 1,
+			Timestamp: time.Now().String(),
+			Data:      data,
+			PrevHash:  prevBlock.Hash,
+			Nonce:     0,
+		}
+		newBlock.Mine()
+		chain.blocks = append(chain.blocks, newBlock)
+	}
+}
 
 func getChain(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(chain.blocks)
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "    ")
+	encoder.Encode(chain.blocks)
 }
-func Genesis() *Block {
-	return CreateBlock("Genesis", []byte{})
-}
+
 func InitBlockChain() *BlockChain {
-	return &BlockChain{[]*Block{Genesis()}}
+	genesis := &Block{
+		Index:     0,
+		Timestamp: time.Now().String(),
+		Data:      "Genesis Block",
+		PrevHash:  "",
+		Nonce:     0,
+	}
+
+	fmt.Println("Mining Genesis Block...")
+	genesis.Mine()
+
+	return &BlockChain{blocks: []*Block{genesis}}
 }
 func (chain *BlockChain) IsValid() bool {
 
@@ -54,7 +85,7 @@ func (chain *BlockChain) IsValid() bool {
 		currentBlock := chain.blocks[i]
 		prevBlock := chain.blocks[i-1]
 
-		if string(currentBlock.PrevHash) != string(prevBlock.Hash) {
+		if currentBlock.PrevHash != prevBlock.Hash {
 			return false
 		}
 	}
@@ -63,24 +94,14 @@ func (chain *BlockChain) IsValid() bool {
 
 func main() {
 	chain = InitBlockChain()
-	chain.AddBlock("First Block after Genesis")
-	chain.AddBlock("Second Block")
-	chain.AddBlock("Third Block")
-	for _, block := range chain.blocks {
-		fmt.Printf("Previous hash: %x\n", block.PrevHash)
-		fmt.Printf("Data: %s\n", block.Data)
-		fmt.Printf("hash: %x\n", block.Hash)
-		fmt.Printf("Is the blockchain valid? %v\n", chain.IsValid())
 
-		// hacking
-		chain.blocks[1].Data = []byte("First Block after Genesiss")
-		chain.blocks[1].DeriveHash() // Recalculate hash for block 1
+	go BlockMiner(chain)
 
-		fmt.Printf("Is it valid after the hack? %v\n", chain.IsValid())
-		http.HandleFunc("/chain", getChain)
-
-		fmt.Println("Server is running on http://localhost:8080/chain")
-		http.ListenAndServe(":8080", nil)
-	}
-
+	http.HandleFunc("/chain", getChain)
+	go func() {
+		PendingBlocks <- "First Block after Genesis"
+		PendingBlocks <- "Second Block"
+	}()
+	fmt.Println("Server is running on http://localhost:8080/chain")
+	http.ListenAndServe(":8080", nil)
 }
